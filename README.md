@@ -1513,7 +1513,7 @@ AI / Agent Application Development
 GitHub:
 
 ```text
-https://github.com/<your-username>
+https://github.com/qw153
 ```
 
 ---
