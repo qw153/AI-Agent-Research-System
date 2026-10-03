@@ -1,0 +1,676 @@
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, List
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from graph.state import ResearchState
+
+
+# =========================================================
+# Environment
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / ".env")
+
+LLM_API_KEY = os.getenv("LLM_API_KEY")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL")
+LLM_MODEL = os.getenv("LLM_MODEL")
+
+if not all([LLM_API_KEY, LLM_BASE_URL, LLM_MODEL]):
+    raise RuntimeError(
+        "Missing LLM_API_KEY / LLM_BASE_URL / LLM_MODEL in .env"
+    )
+
+
+# =========================================================
+# LLM Client
+# =========================================================
+
+client = OpenAI(
+    api_key=LLM_API_KEY,
+    base_url=LLM_BASE_URL,
+)
+
+
+# =========================================================
+# Prompt
+# =========================================================
+
+PROMPT_PATH = BASE_DIR / "prompts" / "evidence_normalizer.txt"
+
+
+def load_prompt() -> str:
+    with open(PROMPT_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+# =========================================================
+# JSON Parser
+# =========================================================
+
+def parse_json_response(content: str) -> Dict[str, Any]:
+
+    if not content:
+        raise ValueError(
+            "Evidence Normalizer returned empty output."
+        )
+
+    content = content.strip()
+
+    # 1. Direct JSON
+    try:
+        data = json.loads(content)
+
+        if isinstance(data, dict):
+            return data
+
+        if isinstance(data, list):
+            return {"evidence": data}
+
+    except json.JSONDecodeError:
+        pass
+
+
+    # 2. Markdown fenced JSON
+    if "```" in content:
+
+        for part in content.split("```"):
+
+            candidate = part.strip()
+
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].strip()
+
+            try:
+                data = json.loads(candidate)
+
+                if isinstance(data, dict):
+                    return data
+
+                if isinstance(data, list):
+                    return {"evidence": data}
+
+            except json.JSONDecodeError:
+                continue
+
+
+    # 3. Extract object
+    start = content.find("{")
+    end = content.rfind("}")
+
+    if start != -1 and end > start:
+
+        try:
+            data = json.loads(
+                content[start:end + 1]
+            )
+
+            if isinstance(data, dict):
+                return data
+
+        except json.JSONDecodeError:
+            pass
+
+
+    # 4. Extract array
+    start = content.find("[")
+    end = content.rfind("]")
+
+    if start != -1 and end > start:
+
+        try:
+            data = json.loads(
+                content[start:end + 1]
+            )
+
+            if isinstance(data, list):
+                return {"evidence": data}
+
+        except json.JSONDecodeError:
+            pass
+
+
+    raise ValueError(
+        "Evidence Normalizer returned invalid JSON."
+    )
+
+
+# =========================================================
+# Fallback Evidence
+# =========================================================
+
+def fallback_evidence(
+    task_id: Any,
+    topic: str,
+    sources: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    如果 LLM 无法返回合法 JSON，
+    不让整个 Research Workflow 失败。
+
+    直接使用 Research Worker 的原始资料
+    构造最基础的可追溯 Evidence。
+
+    URL 和 Title 永远来自原始搜索结果。
+    """
+
+    result = []
+
+    for source in sources:
+
+        if not isinstance(source, dict):
+            continue
+
+        title = str(
+            source.get("title", "")
+        ).strip()
+
+        url = str(
+            source.get("url", "")
+        ).strip()
+
+        content = str(
+            source.get("content", "")
+        ).strip()
+
+        if not url or not content:
+            continue
+
+        result.append(
+            {
+                "task_id": task_id,
+                "claim": topic,
+                "evidence": content[:800],
+                "source_title": title,
+                "source_url": url,
+                "source_type": "other",
+                "confidence": "low",
+            }
+        )
+
+    return result
+
+
+# =========================================================
+# Normalize One Task
+# =========================================================
+
+def normalize_task(
+    query: str,
+    research_result: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+
+    task_id = research_result.get(
+        "task_id"
+    )
+
+    topic = research_result.get(
+        "topic",
+        ""
+    )
+
+    objective = research_result.get(
+        "objective",
+        ""
+    )
+
+    sources = research_result.get(
+        "sources",
+        []
+    )
+
+
+    if not sources:
+
+        print(
+            f"⚠️ Task {task_id}: no sources."
+        )
+
+        return []
+
+
+    source_blocks = []
+
+    source_map = {}
+
+
+    # =====================================================
+    # Prepare Sources
+    #
+    # 限制每个网页内容长度，避免 LLM 输出被截断
+    # =====================================================
+
+    for index, source in enumerate(
+        sources,
+        start=1
+    ):
+
+        if not isinstance(source, dict):
+            continue
+
+        title = str(
+            source.get("title", "")
+        ).strip()
+
+        url = str(
+            source.get("url", "")
+        ).strip()
+
+        content = str(
+            source.get("content", "")
+        ).strip()
+
+
+        if not url:
+            continue
+
+
+        source_map[url] = {
+            "title": title,
+            "url": url,
+        }
+
+
+        # 只给 LLM 前 2500 字符
+        content_for_llm = content[:2500]
+
+
+        source_blocks.append(
+            f"""
+SOURCE {index}
+
+Title:
+{title}
+
+URL:
+{url}
+
+Content:
+{content_for_llm}
+"""
+        )
+
+
+    if not source_blocks:
+        return []
+
+
+    sources_text = "\n".join(
+        source_blocks
+    )
+
+
+    # =====================================================
+    # Build Prompt
+    # =====================================================
+
+    prompt = load_prompt()
+
+    # 不使用 .format()
+    # 防止 Prompt 中 JSON {} 产生 KeyError
+
+    prompt = prompt.replace(
+        "{query}",
+        query
+    )
+
+    prompt = prompt.replace(
+        "{task}",
+        json.dumps(
+            {
+                "task_id": task_id,
+                "topic": topic,
+                "objective": objective,
+            },
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    prompt = prompt.replace(
+        "{sources}",
+        sources_text
+    )
+
+
+    # =====================================================
+    # Call LLM
+    # =====================================================
+
+    print(
+        f"\n🧠 Evidence Normalizer "
+        f"started for Task {task_id}"
+    )
+
+
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return JSON only. "
+                    "No Markdown. "
+                    "No explanation. "
+                    "The root object must contain "
+                    "an 'evidence' array."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0.0,
+        max_tokens=2500,
+    )
+
+
+    content = (
+        response
+        .choices[0]
+        .message
+        .content
+        or ""
+    ).strip()
+
+
+    print(
+        f"📦 Normalizer output length: "
+        f"{len(content)} characters"
+    )
+
+
+    # =====================================================
+    # Parse
+    # =====================================================
+
+    try:
+
+        result = parse_json_response(
+            content
+        )
+
+    except ValueError:
+
+        # -------------------------------------------------
+        # 不再直接让整个 Workflow 崩掉
+        # -------------------------------------------------
+
+        print(
+            "\n⚠️ Normalizer JSON invalid."
+        )
+
+        print(
+            "⚠️ Using deterministic fallback evidence."
+        )
+
+        fallback = fallback_evidence(
+            task_id=task_id,
+            topic=topic,
+            sources=sources
+        )
+
+        print(
+            f"✅ Fallback created "
+            f"{len(fallback)} evidence items."
+        )
+
+        return fallback
+
+
+    # =====================================================
+    # Validate Root
+    # =====================================================
+
+    raw_evidence = result.get(
+        "evidence",
+        []
+    )
+
+
+    if not isinstance(
+        raw_evidence,
+        list
+    ):
+
+        print(
+            "⚠️ Normalizer evidence is not a list."
+        )
+
+        return fallback_evidence(
+            task_id,
+            topic,
+            sources
+        )
+
+
+    # =====================================================
+    # Validate Evidence
+    # =====================================================
+
+    normalized = []
+
+
+    for item in raw_evidence:
+
+        if not isinstance(
+            item,
+            dict
+        ):
+            continue
+
+
+        source_url = str(
+            item.get(
+                "source_url",
+                ""
+            )
+        ).strip()
+
+
+        claim = str(
+            item.get(
+                "claim",
+                ""
+            )
+        ).strip()
+
+
+        evidence_text = str(
+            item.get(
+                "evidence",
+                ""
+            )
+        ).strip()
+
+
+        # -------------------------------------------------
+        # URL 必须存在
+        # -------------------------------------------------
+
+        if not source_url:
+            continue
+
+
+        # -------------------------------------------------
+        # URL 必须来自 Research Worker
+        # -------------------------------------------------
+
+        if source_url not in source_map:
+
+            print(
+                "⚠️ Ignoring hallucinated URL:"
+            )
+
+            print(source_url)
+
+            continue
+
+
+        if not claim or not evidence_text:
+            continue
+
+
+        original_source = source_map[
+            source_url
+        ]
+
+
+        source_type = item.get(
+            "source_type",
+            "other"
+        )
+
+        if source_type not in {
+            "official",
+            "news",
+            "research",
+            "community",
+            "other",
+        }:
+            source_type = "other"
+
+
+        confidence = item.get(
+            "confidence",
+            "low"
+        )
+
+        if confidence not in {
+            "high",
+            "medium",
+            "low",
+        }:
+            confidence = "low"
+
+
+        normalized.append(
+            {
+                "task_id": task_id,
+
+                "claim": claim,
+
+                "evidence": evidence_text,
+
+                # 强制使用原始来源
+                "source_title":
+                    original_source["title"],
+
+                "source_url":
+                    original_source["url"],
+
+                "source_type":
+                    source_type,
+
+                "confidence":
+                    confidence,
+            }
+        )
+
+
+    # =====================================================
+    # 如果 LLM JSON 合法，但一个 Evidence 都没生成
+    # 同样使用 fallback
+    # =====================================================
+
+    if not normalized:
+
+        print(
+            "⚠️ Normalizer produced no valid evidence."
+        )
+
+        print(
+            "⚠️ Using deterministic fallback evidence."
+        )
+
+        normalized = fallback_evidence(
+            task_id,
+            topic,
+            sources
+        )
+
+
+    # 最多保留 10 条
+    normalized = normalized[:10]
+
+
+    print(
+        f"✅ Task {task_id} normalized "
+        f"{len(normalized)} evidence items."
+    )
+
+
+    return normalized
+
+
+# =========================================================
+# Evidence Normalizer Node
+# =========================================================
+
+def evidence_normalizer_node(
+    state: ResearchState
+):
+
+    query = state.get(
+        "query",
+        ""
+    )
+
+    research_results = state.get(
+        "research_results",
+        []
+    )
+
+
+    print("\n" + "=" * 60)
+    print("📚 Evidence Normalizer")
+    print("=" * 60)
+
+
+    print(
+        f"\nResearch Results: "
+        f"{len(research_results)}"
+    )
+
+
+    all_evidence = []
+
+
+    for research_result in research_results:
+
+        if not isinstance(
+            research_result,
+            dict
+        ):
+            continue
+
+
+        task_evidence = normalize_task(
+            query=query,
+            research_result=research_result
+        )
+
+
+        all_evidence.extend(
+            task_evidence
+        )
+
+
+    print("\n" + "=" * 60)
+    print("✅ Evidence Normalization Completed")
+    print(
+        f"Total Evidence: "
+        f"{len(all_evidence)}"
+    )
+    print("=" * 60)
+
+
+    return {
+        "evidence": all_evidence
+    }
