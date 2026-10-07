@@ -1,23 +1,11 @@
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from dotenv import load_dotenv
-from openai import OpenAI
+from llm import chat_completion
 from graph.state import ResearchState
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-if not all([LLM_API_KEY, LLM_BASE_URL, LLM_MODEL]):
-    raise RuntimeError("Missing LLM_API_KEY / LLM_BASE_URL / LLM_MODEL in .env")
-
-client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 PROMPT_PATH = BASE_DIR / "prompts" / "reviewer.txt"
 
 
@@ -138,8 +126,7 @@ def reviewer_node(state: ResearchState):
 
     print("\n🤖 Calling Reviewer LLM...")
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
+    content = chat_completion(
         messages=[
             {
                 "role": "system",
@@ -150,19 +137,31 @@ def reviewer_node(state: ResearchState):
         temperature=0.0,
         max_tokens=4000,
     )
-
-    content = (response.choices[0].message.content or "").strip()
     print(f"📦 Reviewer output length: {len(content)} characters")
 
     try:
         result = parse_json_response(content)
     except ValueError:
         print("\n" + "=" * 60)
-        print("❌ Reviewer JSON Parse Failed")
+        print("⚠️ Reviewer JSON Parse Failed")
         print("=" * 60)
         print("\nRaw output:")
         print(content)
-        raise
+        print("\n⚠️ 回退为保守判定（全部标记为 revise）。")
+        result = {
+            "reviews": [
+                {
+                    "claim_index": i,
+                    "title": c.get("title", ""),
+                    "verdict": "revise",
+                    "score": 0,
+                    "issues": ["Reviewer 输出解析失败，标记为待人工复核。"],
+                    "reason": "Reviewer JSON 解析失败。",
+                    "checked_source_urls": [],
+                }
+                for i, c in enumerate(reviewable_claims, start=1)
+            ]
+        }
 
     raw_reviews = result.get("reviews", [])
     if not isinstance(raw_reviews, list):

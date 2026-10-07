@@ -1,31 +1,7 @@
-import os
 import json
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from llm import chat_completion
 from graph.state import ResearchState
-
-
-# =========================================================
-# Environment
-# =========================================================
-
-load_dotenv()
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-
-# =========================================================
-# LLM Client
-# =========================================================
-
-client = OpenAI(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL,
-)
 
 
 # =========================================================
@@ -222,40 +198,15 @@ JSON 格式：
 
     print("\n🤖 Calling Analyst LLM...")
 
-    try:
-
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            temperature=0.1,
-
-            # 限制输出长度
-            max_tokens=3000,
-        )
-
-    except Exception as e:
-
-        print(
-            f"\n❌ Analyst LLM failed: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        raise
-
-    # =====================================================
-    # Get Content
-    # =====================================================
-
-    content = (
-        response.choices[0]
-        .message
-        .content
-        .strip()
+    content = chat_completion(
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        temperature=0.1,
+        max_tokens=3000,
     )
 
     print(
@@ -277,15 +228,37 @@ JSON 格式：
 
         print("\n")
         print("=" * 60)
-        print("❌ Analyst JSON Parse Failed")
+        print("⚠️ Analyst JSON Parse Failed")
         print("=" * 60)
 
         print("\nRaw output:")
         print(content)
 
-        print("\n" + "=" * 60)
+        print("\n⚠️ 回退到确定性结论（直接引用归一化证据）。")
 
-        raise
+        fallback_claims = []
+        for item in normalized_evidence[:5]:
+            ev = str(item.get("evidence", "")).strip()
+            url = str(item.get("source_url", "")).strip()
+            title = str(item.get("source_title", "")).strip()
+            if not ev or not url:
+                continue
+            fallback_claims.append({
+                "title": str(item.get("claim", "")).strip() or "研究结论",
+                "finding": ev[:200],
+                "supporting_evidence": [
+                    {
+                        "evidence": ev[:200],
+                        "source_title": title,
+                        "source_url": url,
+                    }
+                ],
+                "analysis": "（Analyst JSON 解析失败，直接引用原始证据。）",
+                "confidence": item.get("confidence", "low"),
+                "related_task_ids": [item.get("task_id")],
+            })
+
+        return {"claims": fallback_claims}
 
     # =====================================================
     # Validate

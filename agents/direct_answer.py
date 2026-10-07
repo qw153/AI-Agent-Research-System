@@ -1,30 +1,5 @@
-import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from llm import chat_completion
 from graph.state import ResearchState
-
-
-# =========================
-# Load environment variables
-# =========================
-
-load_dotenv()
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-
-# =========================
-# Initialize LLM client
-# =========================
-
-client = OpenAI(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL,
-)
 
 
 # =========================
@@ -63,8 +38,7 @@ def direct_answer_node(state: ResearchState):
 7. 使用中文回答。
 """
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
+    answer = chat_completion(
         messages=[
             {
                 "role": "user",
@@ -73,8 +47,6 @@ def direct_answer_node(state: ResearchState):
         ],
         temperature=0.2,
     )
-
-    answer = response.choices[0].message.content
 
     return {
         "direct_answer": answer

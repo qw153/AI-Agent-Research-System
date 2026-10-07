@@ -1,40 +1,16 @@
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from llm import chat_completion
 from graph.state import ResearchState
 
 
 # =========================================================
-# Environment
+# Project Root
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-load_dotenv(BASE_DIR / ".env")
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-if not all([LLM_API_KEY, LLM_BASE_URL, LLM_MODEL]):
-    raise RuntimeError(
-        "Missing LLM_API_KEY / LLM_BASE_URL / LLM_MODEL in .env"
-    )
-
-
-# =========================================================
-# LLM Client
-# =========================================================
-
-client = OpenAI(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL,
-)
 
 
 # =========================================================
@@ -298,48 +274,25 @@ Content:
         f"for Task {task_id}"
     )
 
-    try:
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a strict JSON generator. "
-                        "Return valid JSON only. "
-                        "Do not use Markdown fences. "
-                        "Do not add explanations."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=0.0,
-            max_tokens=3000,
-        )
-
-    except Exception as e:
-
-        print(
-            f"❌ Evidence Normalizer LLM failed "
-            f"for Task {task_id}: "
-            f"{type(e).__name__}: {e}"
-        )
-
-        raise
-
-    content = (
-        response.choices[0]
-        .message
-        .content
+    content = chat_completion(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict JSON generator. "
+                    "Return valid JSON only. "
+                    "Do not use Markdown fences. "
+                    "Do not add explanations."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0.0,
+        max_tokens=3000,
     )
-
-    if content is None:
-        content = ""
-
-    content = content.strip()
 
     print(
         f"📦 Normalizer output length: "

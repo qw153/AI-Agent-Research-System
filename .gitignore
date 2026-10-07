@@ -1,26 +1,17 @@
-# Environment variables
+# 密钥 / 环境变量（绝不提交）
 .env
 
-# Python cache
+# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Virtual environments
 .venv/
 venv/
-env/
 
-# IDE
-.vscode/
-.idea/
+# 运行产物 / 记忆持久化
+research_checkpoints.sqlite
+research_reports.sqlite
+research_memory.json
+chroma_db/
 
-# Local database
-*.db
-*.sqlite
-*.sqlite3
-
-# OS generated files
-.DS_Store
-Thumbs.db
+# Streamlit
+.streamlit/

@@ -1,54 +1,10 @@
 import json
-import os
 from pathlib import Path
 from typing import Dict, Any
 
-from openai import OpenAI
-from dotenv import load_dotenv
-
+from llm import chat_completion
 from graph.state import ResearchState
 from tools.json_utils import extract_json_text
-
-
-# ============================================================
-# 加载 .env 环境配置
-# ============================================================
-
-load_dotenv()
-
-
-# ============================================================
-# 读取环境变量
-# ============================================================
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-
-# ============================================================
-# 校验 LLM 配置
-# ============================================================
-
-if not all([
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_MODEL
-]):
-    raise RuntimeError(
-        "Missing LLM env config: "
-        "check LLM_API_KEY / LLM_BASE_URL / LLM_MODEL in .env"
-    )
-
-
-# ============================================================
-# 初始化 DeepSeek 客户端
-# ============================================================
-
-client = OpenAI(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL
-)
 
 
 # ============================================================
@@ -152,31 +108,14 @@ def planner_node(
     # 调用 LLM
     # ========================================================
 
-    response = client.chat.completions.create(
-
-        model=LLM_MODEL,
-
+    raw_output = chat_completion(
         messages=[
             {
                 "role": "user",
                 "content": prompt
             }
         ],
-
-        temperature=0.1
-    )
-
-
-    # ========================================================
-    # 获取 LLM 输出
-    # ========================================================
-
-    raw_output = (
-        response
-        .choices[0]
-        .message
-        .content
-        .strip()
+        temperature=0.1,
     )
 
 

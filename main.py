@@ -1,8 +1,16 @@
+import os
 import sys
 
 from langgraph.graph import StateGraph, START, END
 
 from graph.state import ResearchState
+from memory.store import (
+    get_checkpointer,
+    load_prior_context,
+    new_thread_id,
+    remember_report,
+    thread_config,
+)
 from agents.planner import planner_node
 from agents.researcher import research_worker_node
 from agents.evidence_normalizer import evidence_normalizer_node
@@ -181,7 +189,7 @@ def print_direct_answer(result: ResearchState):
 # Build Graph
 # =========================================================
 
-def build_graph():
+def build_graph(checkpointer=None):
 
     builder = StateGraph(
         ResearchState
@@ -330,7 +338,10 @@ def build_graph():
     )
 
 
-    return builder.compile()
+    if checkpointer is None:
+        checkpointer = get_checkpointer()
+
+    return builder.compile(checkpointer=checkpointer)
 
 
 # =========================================================
@@ -355,11 +366,23 @@ def main():
 
         return
 
-    initial_state: ResearchState = {
-        "query": query
-    }
-
     graph = build_graph()
+
+    conversation_id = os.getenv("RESEARCH_CONVERSATION_ID", "default")
+
+    prior = load_prior_context(conversation_id)
+    effective_query = query
+    if prior:
+        print("\n🧠 检测到上一轮研究上下文，将作为追问背景注入。")
+        effective_query = (
+            f"{query}\n\n"
+            f"【追问背景：本轮是同一主题的追问，请结合以下上轮结论回答】\n"
+            f"{prior}"
+        )
+
+    initial_state: ResearchState = {
+        "query": effective_query
+    }
 
     print(
         "\n🚀 Starting research workflow..."
@@ -368,8 +391,11 @@ def main():
     try:
 
         result = graph.invoke(
-            initial_state
+            initial_state,
+            config=thread_config(new_thread_id(conversation_id)),
         )
+
+        remember_report(conversation_id, result.get("report"))
 
     except Exception as e:
 

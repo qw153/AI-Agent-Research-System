@@ -1,40 +1,16 @@
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict
 
-from dotenv import load_dotenv
-from openai import OpenAI
-
+from llm import chat_completion
 from graph.state import ResearchState
 
 
 # =========================================================
-# Environment
+# Project Root
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-load_dotenv(BASE_DIR / ".env")
-
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-LLM_MODEL = os.getenv("LLM_MODEL")
-
-if not all([LLM_API_KEY, LLM_BASE_URL, LLM_MODEL]):
-    raise RuntimeError(
-        "Missing LLM_API_KEY / LLM_BASE_URL / LLM_MODEL in .env"
-    )
-
-
-# =========================================================
-# LLM Client
-# =========================================================
-
-client = OpenAI(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL,
-)
 
 
 # =========================================================
@@ -180,8 +156,7 @@ def writer_node(state: ResearchState):
 
     print("\n🤖 Calling Writer LLM...")
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
+    content = chat_completion(
         messages=[
             {
                 "role": "system",
@@ -199,27 +174,43 @@ def writer_node(state: ResearchState):
         max_tokens=6000,
     )
 
-    content = (
-        response
-        .choices[0]
-        .message
-        .content
-        or ""
-    ).strip()
-
     print(
         f"📦 Writer output length: "
         f"{len(content)} characters"
     )
 
-    result = parse_json_response(content)
-
-    report = result.get("report")
+    try:
+        result = parse_json_response(content)
+        report = result.get("report") if isinstance(result, dict) else None
+    except ValueError:
+        report = None
 
     if not isinstance(report, dict):
-        raise ValueError(
-            "Writer 'report' must be an object."
-        )
+        print("\n⚠️ Writer JSON 解析失败，使用确定性回退报告。")
+        report = {
+            "title": research_goal or query or "研究报告",
+            "executive_summary": "报告自动生成失败，以下为基于原始发现的确定性摘要。",
+            "sections": [
+                {
+                    "title": c.get("title", f"结论 {i + 1}"),
+                    "finding": str(c.get("finding", ""))[:300],
+                    "analysis": str(c.get("analysis", "")),
+                    "review_verdict": "revise",
+                    "review_score": 0,
+                    "supporting_evidence": [
+                        {
+                            "evidence": str(e.get("evidence", ""))[:200],
+                            "source_title": str(e.get("source_title", "")),
+                            "source_url": str(e.get("source_url", "")),
+                        }
+                        for e in c.get("supporting_evidence", [])
+                        if isinstance(e, dict) and e.get("source_url")
+                    ][:3],
+                }
+                for i, c in enumerate(claims[:5], start=1)
+            ],
+            "overall_analysis": "（Writer 输出解析失败，本报告由确定性回退逻辑生成。）",
+        }
 
     # ---------------------------------------------------------
     # Minimal validation

@@ -1,4 +1,28 @@
-langgraph
-openai
-python-dotenv
-tavily-python
+# ============================================================
+# AI Agent Research System 依赖清单
+# 安装：pip install -r requirements.txt
+# ============================================================
+
+# --- LLM 调用（DeepSeek 等 OpenAI 兼容接口）---
+openai>=1.60,<4
+
+# --- Agent 工作流 ---
+langgraph>=1.2,<2
+
+# --- 记忆持久化（可选：缺失时代码自动回退到内存记忆）---
+langgraph-checkpoint-sqlite>=2.0
+
+# --- 联网搜索（Tavily）---
+tavily-python>=0.7,<1
+
+# --- 环境变量加载 ---
+python-dotenv>=1.0,<2
+
+# --- 网页界面（Streamlit）---
+streamlit>=1.40,<2
+
+# --- Web API ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.34,<1.0
+pydantic>=2.0,<3
+requests>=2.31,<3
